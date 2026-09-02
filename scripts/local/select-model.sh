@@ -178,13 +178,28 @@ fi
 load_ctx="$CODEX_TARGET_CTX"
 [ "$model_ctx" -lt "$load_ctx" ] && load_ctx="$model_ctx"
 
-# Reload only when it is absent or already loaded with too small a window,
-# since loading is the slow part.
-loaded_ctx="$("$LMS" ps --json 2>/dev/null | jq -r --arg k "$CHOSEN" \
-    'if type == "array" then (.[] | select((.modelKey // .identifier) == $k) | .contextLength // 0) else 0 end' 2>/dev/null | head -1)"
-if [ "${loaded_ctx:-0}" -ge "$CODEX_MIN_CTX" ]; then
-    echo "Already loaded with ${loaded_ctx} context; leaving it as is."
+# Instances of this model already in memory, as "identifier<TAB>contextLength".
+# There can be several: "lms load" does not replace, it adds another instance
+# under a suffixed identifier like "<key>:2".
+instances="$("$LMS" ps --json 2>/dev/null | jq -r --arg k "$CHOSEN" \
+    'if type == "array" then (.[] | select((.modelKey // .identifier) == $k)
+        | "\(.identifier)\t\(.contextLength // 0)") else empty end' 2>/dev/null || true)"
+instance_count="$(printf '%s' "$instances" | grep -c . || true)"
+biggest_ctx="$(printf '%s' "$instances" | awk -F'\t' 'BEGIN{m=0} $2>m{m=$2} END{print m+0}')"
+
+# Reuse only when there is exactly one instance and its window is big enough.
+# Anything else gets torn down first: loading alongside an undersized instance
+# both wastes VRAM and leaves `codex -m <key>` resolving to the bare identifier,
+# which is the undersized one.
+if [ "${instance_count:-0}" -eq 1 ] && [ "${biggest_ctx:-0}" -ge "$CODEX_MIN_CTX" ]; then
+    echo "Already loaded with ${biggest_ctx} context; leaving it as is."
 else
+    if [ "${instance_count:-0}" -gt 0 ]; then
+        echo "Unloading ${instance_count} existing instance(s) of $CHOSEN (context ${biggest_ctx})..."
+        printf '%s\n' "$instances" | while IFS=$'\t' read -r ident _ctx; do
+            [ -n "$ident" ] && "$LMS" unload "$ident" >/dev/null 2>&1 || true
+        done
+    fi
     echo "Loading $CHOSEN with ${load_ctx} context (GPU offload: max)..."
     if ! "$LMS" load "$CHOSEN" -c "$load_ctx" --gpu max -y >/dev/null 2>&1; then
         echo "Warning: 'lms load' failed. LM Studio may still just-in-time load it," >&2

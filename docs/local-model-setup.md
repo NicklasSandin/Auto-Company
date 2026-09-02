@@ -187,6 +187,28 @@ Deleting the `raise_exception` alone is wrong — that branch emits nothing, so 
 
 Set this in LM Studio's GUI under **My Models → the model → Prompt Template**. Writing it into `~/.lmstudio/.internal/user-concrete-model-default-config/.../<model>.gguf.json` as an `llm.prediction.promptTemplate` field does **not** work — the server ignores it. Easiest path is simply to pick a model whose stock template has no such guard.
 
+### The model is loaded but Codex still overflows its context
+
+`lms load` does not replace a loaded model, it adds another instance under a
+suffixed identifier:
+
+```
+identifier=qwen/qwen3-8b      ctx=8192
+identifier=qwen/qwen3-8b:2    ctx=32768
+```
+
+Both sit in VRAM, and `codex -m qwen/qwen3-8b` resolves to the bare identifier —
+the undersized one — so cycles keep failing while the GPU holds two copies.
+`select-model.sh` now unloads every existing instance of the chosen model before
+loading, unless there is exactly one and its window is already big enough. By
+hand:
+
+```bash
+~/.lmstudio/bin/lms unload --all
+~/.lmstudio/bin/lms load <model> -c 32768 --gpu max -y
+~/.lmstudio/bin/lms ps --json | jq -r '.[] | "\(.identifier) ctx=\(.contextLength)"'
+```
+
 ### Generation is very slow
 
 Confirm the GPU is really being used with `lms runtime survey`, and check the model is not larger than VRAM. `lms ps` shows what is loaded and where.
