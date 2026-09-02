@@ -1,4 +1,4 @@
-.PHONY: start start-awake awake stop status last cycles monitor dashboard pause resume install uninstall team help
+.PHONY: start start-awake awake start-local models stop status last cycles monitor dashboard pause resume install uninstall team help
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
 ENGINE ?= claude
@@ -34,6 +34,17 @@ endif
 
 stop: ## Stop the loop gracefully
 	./scripts/core/stop-loop.sh
+
+# === Local Models (Codex CLI + LM Studio) ===
+
+start-local: ## Pick a local model for this session, then start the loop
+	./scripts/local/select-model.sh --start
+
+start-local-daemon: ## Pick a local model, then restart the systemd daemon with it
+	./scripts/local/select-model.sh --daemon
+
+models: ## List the local models the loop can use
+	./scripts/local/select-model.sh --list
 
 # === Monitoring ===
 
