@@ -80,6 +80,7 @@ Notes:
 | Core | `scripts/core/auto-loop.sh` | Main loop execution, circuit breaker, logging, consensus updates |
 | Core | `scripts/core/monitor.sh` | Core status / log output |
 | Core | `scripts/core/stop-loop.sh` | Core stop / pause / resume control |
+| Core | `scripts/core/reset-consensus.sh` | Reset the company to Day 0 (archives consensus, clears the rollback snapshot) |
 
 ## Fast Troubleshooting Path
 

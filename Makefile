@@ -103,10 +103,7 @@ clean-logs: ## Remove all cycle logs
 	@echo "Cycle logs cleaned."
 
 reset-consensus: ## Reset consensus to initial Day 0 state (CAUTION)
-	@echo "This will reset all company progress. Ctrl+C to cancel."
-	@sleep 3
-	git checkout -- memories/consensus.md
-	@echo "Consensus reset to initial state."
+	./scripts/core/reset-consensus.sh
 
 # === Help ===
 

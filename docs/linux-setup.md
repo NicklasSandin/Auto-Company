@@ -185,10 +185,22 @@ Dashboard **Start** installs the systemd unit if it is missing and then starts i
 - Cause: FUSE-backed filesystems do not carry POSIX permissions, and `npm install` on them is slow and occasionally throws `EPERM`
 - Fix: for long unattended runs, keep the checkout on an ext4/btrfs/xfs path
 
-### `make reset-consensus` fails with `did not match any file(s) known to git`
+### Starting the company over from Day 0
 
-- Cause: `memories/` is gitignored, so `memories/consensus.md` was never committed and `git checkout --` has nothing to restore
-- Fix: delete the file to start clean — `rm -f memories/consensus.md`. The next cycle recreates it from the skeleton in `PROMPT.md`
+Run `make reset-consensus`. It archives the current `memories/consensus.md`, removes it, and removes the loop's rollback snapshot.
+
+Day 0 is the *absence* of the consensus file, not an empty template: `auto-loop.sh` substitutes "No consensus file found. This is the very first cycle." when it cannot read the file, and PROMPT.md's Cycle 1 rule takes over. A pre-seeded skeleton would instead satisfy `validate_consensus()` on the next cycle even if the agent wrote nothing, reporting a failed cycle as OK.
+
+Do not reset by hand with `rm -f memories/consensus.md` alone. That leaves `memories/consensus.md.bak` behind, and `restore_consensus()` copies it back after the next failed cycle — silently resurrecting the progress you just discarded. `make reset-consensus` removes both.
+
+```bash
+make stop                                        # required: it refuses while the loop is running
+make reset-consensus                             # archive, then reset
+./scripts/core/reset-consensus.sh --force        # skip the 3s countdown
+./scripts/core/reset-consensus.sh --no-archive   # delete without keeping a copy
+```
+
+Archives land at `memories/consensus-<timestamp>.archive.md`. `memories/` is gitignored, so git cannot recover a consensus file — the archive is the only copy. Delete old archives yourself when you no longer need them.
 
 ## 8. Command Comparison
 
