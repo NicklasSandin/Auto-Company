@@ -3,6 +3,16 @@
 
 import type { ApiKey } from '../types';
 
+// Escape user-controlled strings (email, etc.) before interpolating into HTML.
+function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap');
 
@@ -586,23 +596,37 @@ export function landingPage(host: string): string {
 }
 
 export function registerPage(error?: string, tier?: string): string {
+  // Whitelist — never echo an arbitrary client-supplied string into the page.
+  const safeTier: 'free' | 'pro' | 'business' =
+    tier === 'pro' ? 'pro' : tier === 'business' ? 'business' : 'free';
+  const wantsPaid = safeTier !== 'free';
+  const tierLabel = safeTier === 'pro' ? 'Pro' : 'Business';
+
   const body = `
   ${nav()}
   <section class="section">
     <div class="container" style="max-width:480px;">
       <p class="section-title">Get API Key</p>
       <h1 class="section-h2">Start generating</h1>
-      <p class="section-sub" style="margin-bottom:32px;">Enter your email to receive your API key instantly. No password. No credit card for free tier.</p>
+      <p class="section-sub" style="margin-bottom:32px;">
+        ${wantsPaid
+          ? `${tierLabel} isn&rsquo;t self-serve yet &mdash; it&rsquo;s launching soon. Leave your email below and we&rsquo;ll reach out the moment it&rsquo;s ready.`
+          : `Enter your email to receive your API key instantly. No password. No credit card for free tier.`}
+      </p>
 
       ${error ? `<div class="alert alert-error">${error}</div>` : ''}
 
       <div class="card">
         <form method="POST" action="/register">
-          <input type="hidden" name="tier" value="${tier ?? 'free'}" />
+          <input type="hidden" name="tier" value="${safeTier}" />
           <div class="form-group">
             <label class="form-label" for="email">EMAIL ADDRESS</label>
             <input class="form-input" type="email" name="email" id="email" placeholder="you@example.com" required autocomplete="email" />
-            <p class="form-hint">Your API key will be displayed immediately after registration.</p>
+            <p class="form-hint">${
+              wantsPaid
+                ? `We&rsquo;ll only use this to let you know when ${tierLabel} launches.`
+                : 'Your API key will be displayed immediately after registration.'
+            }</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="keyname">KEY NAME (optional)</label>
@@ -610,7 +634,7 @@ export function registerPage(error?: string, tier?: string): string {
             <p class="form-hint">Give this key a label to identify it later.</p>
           </div>
           <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;">
-            Create API Key →
+            ${wantsPaid ? 'Notify Me →' : 'Create API Key →'}
           </button>
         </form>
       </div>
@@ -625,13 +649,46 @@ export function registerPage(error?: string, tier?: string): string {
   return layout('Get API Key', body);
 }
 
+export function interestCapturedPage(email: string, tier: 'pro' | 'business'): string {
+  const tierLabel = tier === 'pro' ? 'Pro' : 'Business';
+  const safeEmail = escapeHtml(email);
+
+  const body = `
+  ${nav()}
+  <section class="section">
+    <div class="container" style="max-width:520px;">
+      <div class="alert alert-success">
+        ✓ Got it — we've saved your email
+      </div>
+      <p class="section-title">${tierLabel} — Launching Soon</p>
+      <h1 class="section-h2">You're on the list</h1>
+      <p class="section-sub" style="margin-bottom:32px;">
+        ${tierLabel} isn't self-serve yet. We'll reach out to <strong>${safeEmail}</strong>
+        the moment it opens up — no action needed from you.
+      </p>
+
+      <div class="card">
+        <p class="card-title">In the meantime</p>
+        <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+          Grab a free API key now — 100 images/month, no credit card, ready instantly.
+        </p>
+        <a href="/register" class="btn btn-primary" style="width:100%;">Get Free API Key →</a>
+      </div>
+    </div>
+  </section>
+  ${footer()}`;
+
+  return layout(`${tierLabel} — Coming Soon`, body);
+}
+
 export function keyCreatedPage(rawKey: string, email: string, tier: string): string {
+  const safeEmail = escapeHtml(email);
   const body = `
   ${nav()}
   <section class="section">
     <div class="container" style="max-width:600px;">
       <div class="alert alert-success">
-        ✓ API key created for ${email}
+        ✓ API key created for ${safeEmail}
       </div>
       <p class="section-title">Your API Key</p>
       <h1 class="section-h2">Save this key now</h1>
@@ -648,7 +705,7 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
           <button class="btn btn-primary" data-copy="${rawKey}" style="white-space:nowrap;">Copy</button>
         </div>
         <p style="font-size:12px;color:var(--text-3);margin-top:12px;font-family:var(--font-mono);">
-          Free tier: 100 images/month · Resets monthly · ${tier === 'pro' ? '10,000 images' : 'upgrade anytime'}
+          Free tier: 100 images/month · Resets monthly · <a href="/register?tier=pro">need more? join the Pro waitlist →</a>
         </p>
       </div>
 

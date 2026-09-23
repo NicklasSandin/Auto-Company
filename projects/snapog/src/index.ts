@@ -7,10 +7,11 @@ import {
   landingPage,
   registerPage,
   keyCreatedPage,
+  interestCapturedPage,
   dashboardPage,
   errorPage,
 } from './dashboard/pages';
-import type { ApiKey, Env, OGParams, Tier } from './types';
+import type { ApiKey, Env, OGParams } from './types';
 import { TIER_LIMITS } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -203,24 +204,21 @@ app.get('/register', c => {
 });
 
 app.post('/register', async c => {
-  let email: string, keyname: string, tier: string;
+  let email: string, keyname: string, requestedTier: string;
   try {
     const form = await c.req.formData();
     email = (form.get('email') as string ?? '').trim().toLowerCase();
     keyname = (form.get('keyname') as string ?? '').trim() || 'default';
-    tier = (form.get('tier') as string ?? 'free').trim();
+    requestedTier = (form.get('tier') as string ?? 'free').trim();
   } catch {
     return htmlResponse(registerPage('Invalid form data'), 400);
   }
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return htmlResponse(registerPage('Please enter a valid email address', tier), 400);
+    return htmlResponse(registerPage('Please enter a valid email address', requestedTier), 400);
   }
 
-  const validTiers: Tier[] = ['free', 'pro', 'business'];
-  const safeTier: Tier = validTiers.includes(tier as Tier) ? (tier as Tier) : 'free';
-
-  // Upsert user
+  // Upsert user (needed for both free-key issuance and interest capture below)
   const userId = crypto.randomUUID();
   await c.env.DB
     .prepare(
@@ -237,24 +235,36 @@ app.post('/register', async c => {
     return htmlResponse(registerPage('Database error — please try again'), 500);
   }
 
-  // Generate API key
+  // SECURITY: public self-service registration must NEVER trust a
+  // client-supplied tier to grant paid capacity — there is no payment check
+  // here. Pro/Business aren't self-serve yet (no live payment processor),
+  // so a request for either is recorded as interest, not fulfilled as a key.
+  if (requestedTier === 'pro' || requestedTier === 'business') {
+    await c.env.DB
+      .prepare('INSERT INTO tier_requests (id, user_id, tier) VALUES (?, ?, ?)')
+      .bind(crypto.randomUUID(), user.id, requestedTier)
+      .run();
+    return htmlResponse(interestCapturedPage(email, requestedTier));
+  }
+
+  // Every self-service key minted here is 'free' — full stop, regardless of
+  // what the client sent.
   const rawKey = generateRawKey();
   const keyHash = await sha256(rawKey);
   const keyPrefix = rawKey.slice(0, 12);
   const keyId = crypto.randomUUID();
   const resetAt = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-  const monthlyLimit = TIER_LIMITS[safeTier];
 
   await c.env.DB
     .prepare(
       `INSERT INTO api_keys
          (id, user_id, name, key_prefix, key_hash, tier, monthly_limit, usage_reset_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 'free', ?, ?)`
     )
-    .bind(keyId, user.id, keyname, keyPrefix, keyHash, safeTier, monthlyLimit, resetAt)
+    .bind(keyId, user.id, keyname, keyPrefix, keyHash, TIER_LIMITS.free, resetAt)
     .run();
 
-  return htmlResponse(keyCreatedPage(rawKey, email, safeTier));
+  return htmlResponse(keyCreatedPage(rawKey, email, 'free'));
 });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
