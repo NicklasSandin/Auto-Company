@@ -134,6 +134,9 @@ progress.json
 status.json
 logs/
 
+# Scratch workspace used to route around a full root filesystem (/tmp ENOSPC)
+.scratch/
+
 # Auto-loop state files
 .auto-loop.pid
 .auto-loop-state
