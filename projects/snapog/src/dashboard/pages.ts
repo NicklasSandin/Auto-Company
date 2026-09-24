@@ -409,7 +409,7 @@ export function landingPage(host: string): string {
       <div class="og-preview-wrap" style="margin-top:56px;">
         <div class="og-preview-label">1200 × 630 PNG — rendered live</div>
         <img
-          src="/og?title=How%20to%20Build%20a%20Billion-Dollar%20API&description=A%20deep%20dive%20into%20developer%20tools%20that%20compound%20%E2%80%94%20and%20the%20pricing%20that%20makes%20them%20survive&domain=myblog.dev&theme=dark&template=default"
+          src="/og?title=How%20to%20Build%20a%20Billion-Dollar%20API&description=A%20deep%20dive%20into%20developer%20tools%20that%20compound%20%E2%80%94%20and%20the%20pricing%20that%20makes%20them%20survive&domain=myblog.dev&theme=dark&template=default&key=sk_demo_public_landing_preview_2026_do_not_use_for_real_traffic"
           alt="Live OG image example"
           style="width:100%;border-radius:8px;"
         />

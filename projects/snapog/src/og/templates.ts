@@ -14,6 +14,110 @@ type VNode = {
   };
 };
 
+// ─── Manual text wrapping ──────────────────────────────────────────────────
+//
+// ROOT CAUSE (found in cycle6, superseding the theory below): this was never
+// a wrapping bug. It was `lineHeight` being passed as a unitless numeric
+// STRING (e.g. '1.2'), which is how every style object in this file wrote
+// it — completely reasonable-looking CSS-in-JS. Satori's bundled style
+// normalizer (workers-og 0.0.14 -> satori ^0.10.3) has an asymmetric code
+// path for `lineHeight`: a raw JS *number* (`1.2`) is preserved as the
+// intended unitless multiplier, but a *string* (`'1.2'`) gets routed
+// through the generic CSS length parser and re-divided by the font size,
+// silently corrupting it down to a tiny fraction (e.g. ~0.03 instead of
+// 1.2). Yoga then computes a near-zero line-box height, so every line —
+// whether Satori's own auto-wrap or our own hand-split sibling <div>s below
+// — gets stacked at (approximately) the same y-offset instead of below the
+// previous one. Confirmed empirically with a minimal two-sibling-div repro
+// (see /tmp/og-repro) via row-level ink-density profiling: `lineHeight:
+// '1.2'` produced one 16px overlapping band; `lineHeight: 1.2` (number)
+// produced two cleanly separated 30px bands. Also confirmed this was the
+// *entire* cause of the "sibling divs still overlap" failure from the
+// previous attempt — no other flex/JSX layout issue was involved.
+//
+// The fix: every `lineHeight` in this file is now a plain number, not a
+// string. That alone fixes stacking for both Satori's native auto-wrap and
+// the manual per-line rendering below.
+//
+// We still pre-compute line breaks ourselves (rather than deleting this and
+// leaning on Satori's now-working native wrapping) to keep the existing,
+// already-verified-correct-per-QA line-break math and the `maxLines`
+// overflow cap — no font is embedded in this renderer (see render.ts), so
+// there's no real glyph-metrics access at request time; this uses a
+// deliberately conservative average-character-width-per-em estimate per
+// font weight rather than exact measurement. It only needs to be good
+// enough to choose reasonable wrap points; a slightly-early or slightly-late
+// wrap is a cosmetic nit, not a correctness bug.
+const AVG_CHAR_WIDTH_EM: Record<number, number> = {
+  400: 0.52,
+  700: 0.58,
+  800: 0.62,
+};
+
+function wrapLines(
+  text: string,
+  maxWidthPx: number,
+  fontSizePx: number,
+  weight: number,
+  maxLines: number
+): string[] {
+  const emFactor = AVG_CHAR_WIDTH_EM[weight] ?? 0.55;
+  const charsPerLine = Math.max(1, Math.floor(maxWidthPx / (fontSizePx * emFactor)));
+
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    if (lines.length === maxLines - 1) {
+      // Last allowed line — keep appending rather than silently dropping
+      // trailing words. It may overflow the frame width; that's a much
+      // smaller problem than losing text entirely.
+      current = current ? `${current} ${word}` : word;
+      continue;
+    }
+    const candidate = current ? `${current} ${word}` : word;
+    if (current && candidate.length > charsPerLine) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+
+  return lines;
+}
+
+// Renders `text` as a column of single-line divs instead of one multi-line
+// text node. `textStyle` (font/color/spacing) is applied to each line;
+// `containerStyle` (flex/margin/etc.) is applied to the wrapping column.
+function wrappedTextBlock(
+  text: string,
+  textStyle: StyleObject,
+  containerStyle: StyleObject,
+  maxWidthPx: number,
+  maxLines = 3
+): VNode {
+  const fontSizePx = parseFloat(String(textStyle.fontSize));
+  const weight = Number(textStyle.fontWeight) || 400;
+  const lines = wrapLines(text, maxWidthPx, fontSizePx, weight, maxLines);
+
+  return {
+    type: 'div',
+    props: {
+      style: { display: 'flex', flexDirection: 'column', ...containerStyle },
+      children: lines.map(line => ({
+        type: 'div',
+        props: {
+          style: { display: 'flex', ...textStyle },
+          children: line,
+        },
+      })),
+    },
+  };
+}
+
 // Accent bar — left edge visual anchor
 function AccentBar(color: string): VNode {
   return {
@@ -162,37 +266,31 @@ function defaultTemplate(params: OGParams, watermark: boolean): VNode {
         AccentBar(accent),
         Header(domain, tag, accent, surface, primary),
         // Title
-        {
-          type: 'div',
-          props: {
-            style: {
-              display: 'flex',
-              flex: '1',
-              fontSize,
-              fontWeight: '700',
-              color: primary,
-              lineHeight: '1.2',
-              letterSpacing: '-0.02em',
-            },
-            children: title,
+        wrappedTextBlock(
+          title,
+          {
+            fontSize,
+            fontWeight: '700',
+            color: primary,
+            lineHeight: 1.2,
+            letterSpacing: '-0.02em',
           },
-        },
+          { flex: '1' },
+          1044
+        ),
         // Description
         ...(description
           ? [
-              {
-                type: 'div',
-                props: {
-                  style: {
-                    fontSize: '22px',
-                    color: secondary,
-                    marginTop: '24px',
-                    lineHeight: '1.5',
-                    maxWidth: '900px',
-                  },
-                  children: description,
+              wrappedTextBlock(
+                description,
+                {
+                  fontSize: '22px',
+                  color: secondary,
+                  lineHeight: 1.5,
                 },
-              },
+                { marginTop: '24px', maxWidth: '900px' },
+                900
+              ),
             ]
           : []),
         Footer(author, watermark, secondary),
@@ -246,37 +344,32 @@ function blogTemplate(params: OGParams, watermark: boolean): VNode {
         // Site label + tag
         Header(domain, tag, accent, surface, primary),
         // Title
-        {
-          type: 'div',
-          props: {
-            style: {
-              display: 'flex',
-              flex: '1',
-              fontSize,
-              fontWeight: '700',
-              color: primary,
-              lineHeight: '1.2',
-              letterSpacing: '-0.01em',
-            },
-            children: title,
+        wrappedTextBlock(
+          title,
+          {
+            fontSize,
+            fontWeight: '700',
+            color: primary,
+            lineHeight: 1.2,
+            letterSpacing: '-0.01em',
           },
-        },
+          { flex: '1' },
+          1040
+        ),
         // Description
         ...(description
           ? [
-              {
-                type: 'div',
-                props: {
-                  style: {
-                    fontSize: '21px',
-                    color: secondary,
-                    marginTop: '28px',
-                    lineHeight: '1.6',
-                    fontStyle: 'italic',
-                  },
-                  children: description,
+              wrappedTextBlock(
+                description,
+                {
+                  fontSize: '21px',
+                  color: secondary,
+                  lineHeight: 1.6,
+                  fontStyle: 'italic',
                 },
-              },
+                { marginTop: '28px' },
+                1040
+              ),
             ]
           : []),
         Footer(author, watermark, secondary),
@@ -373,36 +466,30 @@ function articleTemplate(params: OGParams, watermark: boolean): VNode {
           },
         },
         // Title
-        {
-          type: 'div',
-          props: {
-            style: {
-              display: 'flex',
-              flex: '1',
-              fontSize,
-              fontWeight: '800',
-              color: primary,
-              lineHeight: '1.15',
-              letterSpacing: '-0.025em',
-            },
-            children: title,
+        wrappedTextBlock(
+          title,
+          {
+            fontSize,
+            fontWeight: '800',
+            color: primary,
+            lineHeight: 1.15,
+            letterSpacing: '-0.025em',
           },
-        },
+          { flex: '1' },
+          1056
+        ),
         ...(description
           ? [
-              {
-                type: 'div',
-                props: {
-                  style: {
-                    fontSize: '20px',
-                    color: secondary,
-                    marginTop: '20px',
-                    lineHeight: '1.5',
-                    maxWidth: '850px',
-                  },
-                  children: description,
+              wrappedTextBlock(
+                description,
+                {
+                  fontSize: '20px',
+                  color: secondary,
+                  lineHeight: 1.5,
                 },
-              },
+                { marginTop: '20px', maxWidth: '850px' },
+                850
+              ),
             ]
           : []),
         // Footer divider + meta

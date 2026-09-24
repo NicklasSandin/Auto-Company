@@ -74,24 +74,40 @@ async function maybeResetUsage(db: D1Database, key: ApiKey): Promise<ApiKey> {
   return key;
 }
 
-// Increment usage counter and record event
-async function recordUsage(
+// Atomically check-and-consume one unit of quota. The check
+// (usage_count < monthly_limit) and the increment happen as a single
+// conditional UPDATE, so two concurrent requests on the same key can't both
+// read a stale pre-increment usage_count and both pass — only one of them
+// can flip a key from e.g. usage_count=99 to 100 when monthly_limit=100;
+// the other affects 0 rows and is rejected. This must run in the main
+// request path, before the cache lookup and before the expensive Satori
+// render, so a request that's going to be rejected never pays render cost.
+// See docs/qa/cycle5-hardening.md Bug 1.
+async function tryConsumeQuota(db: D1Database, key: ApiKey): Promise<boolean> {
+  const result = await db
+    .prepare(
+      'UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ? AND usage_count < monthly_limit'
+    )
+    .bind(key.id)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+// Best-effort event log for the dashboard's "recent generations" list only —
+// not billing-critical, safe to fire-and-forget via waitUntil. Quota
+// accounting itself lives entirely in tryConsumeQuota above.
+async function recordUsageEvent(
   db: D1Database,
   key: ApiKey,
   template: string,
   cacheHit: boolean
 ): Promise<void> {
-  const eventId = crypto.randomUUID();
-  await db.batch([
-    db
-      .prepare('UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ?')
-      .bind(key.id),
-    db
-      .prepare(
-        'INSERT INTO usage_events (id, api_key_id, template, cache_hit) VALUES (?, ?, ?, ?)'
-      )
-      .bind(eventId, key.id, template, cacheHit ? 1 : 0),
-  ]);
+  await db
+    .prepare(
+      'INSERT INTO usage_events (id, api_key_id, template, cache_hit) VALUES (?, ?, ?, ?)'
+    )
+    .bind(crypto.randomUUID(), key.id, template, cacheHit ? 1 : 0)
+    .run();
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -125,8 +141,11 @@ app.get('/og', async c => {
   // Reset usage if month rolled
   apiKey = await maybeResetUsage(c.env.DB, apiKey);
 
-  // Check rate limit
-  if (apiKey.usage_count >= apiKey.monthly_limit) {
+  // Check-and-consume rate limit atomically, before any cache lookup or the
+  // expensive render — see tryConsumeQuota for why this must be a single
+  // conditional UPDATE rather than a read-then-later-write.
+  const withinQuota = await tryConsumeQuota(c.env.DB, apiKey);
+  if (!withinQuota) {
     return c.json(
       {
         error: 'Monthly image limit reached',
@@ -157,8 +176,11 @@ app.get('/og', async c => {
   // ── R2 cache lookup ──
   const cached = await c.env.OG_CACHE.get(r2Key);
   if (cached) {
-    // Cache hit — return stored PNG, still track usage (counts toward limit)
-    await recordUsage(c.env.DB, apiKey, params.template ?? 'default', true);
+    // Cache hit — quota was already consumed atomically above; just log the
+    // event for the dashboard (best-effort, doesn't block the response).
+    c.executionCtx.waitUntil(
+      recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', true)
+    );
     const imageData = await cached.arrayBuffer();
     return new Response(imageData, {
       headers: {
@@ -182,9 +204,10 @@ app.get('/og', async c => {
     })
   );
 
-  // Record usage (also fire-and-forget after we have the image)
+  // Log the event for the dashboard (best-effort; quota was already
+  // consumed atomically above, before the render even started)
   c.executionCtx.waitUntil(
-    recordUsage(c.env.DB, apiKey, params.template ?? 'default', false)
+    recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', false)
   );
 
   return new Response(imageBuffer, {
