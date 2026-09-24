@@ -681,6 +681,40 @@ export function interestCapturedPage(email: string, tier: 'pro' | 'business'): s
   return layout(`${tierLabel} — Coming Soon`, body);
 }
 
+export function alreadyRegisteredPage(email: string, tier: string): string {
+  const safeEmail = escapeHtml(email);
+  const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1);
+
+  const body = `
+  ${nav()}
+  <section class="section">
+    <div class="container" style="max-width:520px;">
+      <div class="alert alert-error">
+        This email is already registered
+      </div>
+      <p class="section-title">Already Registered</p>
+      <h1 class="section-h2">You already have a key</h1>
+      <p class="section-sub" style="margin-bottom:32px;">
+        <strong>${safeEmail}</strong> already has a ${tierLabel} API key. For
+        security we only ever show a newly created key once, so we can't
+        redisplay it here — but it's still live and working.
+      </p>
+
+      <div class="card">
+        <p class="card-title">Lost your key?</p>
+        <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+          Paste it into the dashboard to check usage, or reach out if you no
+          longer have it.
+        </p>
+        <a href="/dashboard" class="btn btn-primary" style="width:100%;">Go to Dashboard →</a>
+      </div>
+    </div>
+  </section>
+  ${footer()}`;
+
+  return layout('Already Registered', body);
+}
+
 export function keyCreatedPage(rawKey: string, email: string, tier: string): string {
   const safeEmail = escapeHtml(email);
   const body = `

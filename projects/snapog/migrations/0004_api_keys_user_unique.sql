@@ -1,0 +1,25 @@
+-- SnapOG D1 Schema
+-- Migration 0004: enforce one self-service API key per user
+--
+-- POST /register minted a brand new api_keys row on every call, even for an
+-- email that already had one, letting a single identity farm unlimited
+-- independent free-tier keys (see docs/qa/cycle6-register-adversarial.md).
+-- There is currently no product surface for a user to hold more than one
+-- self-service key (no "add another key" route/UI — every key comes from
+-- this one INSERT in POST /register), so a real UNIQUE constraint on
+-- user_id is the correct invariant here, not just a stopgap. It also lets
+-- /register use the same atomic `INSERT ... ON CONFLICT DO NOTHING` shape
+-- already used for the `users` upsert and for `tryConsumeQuota`'s
+-- conditional UPDATE, instead of a read-then-insert existence check that
+-- would reopen the same concurrent-registration race those fixes closed
+-- for other tables.
+--
+-- Local-dev note: if your local D1 state predates this migration and was
+-- used to reproduce the farming bug (e.g. via docs/qa/cycle6-register-adversarial.md's
+-- repro steps), it will contain duplicate user_id rows in api_keys, and this
+-- CREATE UNIQUE INDEX will fail with SQLITE_CONSTRAINT. Wipe local state
+-- (rm -rf .wrangler/state) or de-dupe api_keys manually before applying.
+-- Does not affect production, which has never been deployed and starts
+-- clean (see docs/devops/cycle1-deploy.md).
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique ON api_keys(user_id);

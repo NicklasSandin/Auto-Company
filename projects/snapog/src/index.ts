@@ -8,6 +8,7 @@ import {
   registerPage,
   keyCreatedPage,
   interestCapturedPage,
+  alreadyRegisteredPage,
   dashboardPage,
   errorPage,
 } from './dashboard/pages';
@@ -90,6 +91,41 @@ async function tryConsumeQuota(db: D1Database, key: ApiKey): Promise<boolean> {
     )
     .bind(key.id)
     .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+// Per-IP throttle on POST /register itself — separate from the per-key /og
+// quota above. Fixed one-hour buckets keyed by (ip, window_start); ensure
+// the bucket row exists, then atomically check-and-increment it with the
+// same conditional-UPDATE shape as tryConsumeQuota, so two concurrent
+// registrations from the same IP can't both read a stale pre-increment
+// count and both pass. See docs/qa/cycle6-register-adversarial.md.
+const REGISTER_ATTEMPTS_PER_HOUR = 10;
+
+function currentHourWindow(): string {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())
+  ).toISOString();
+}
+
+async function tryConsumeRegisterAttempt(db: D1Database, ip: string): Promise<boolean> {
+  const windowStart = currentHourWindow();
+
+  await db
+    .prepare(
+      'INSERT INTO register_attempts (ip, window_start, count) VALUES (?, ?, 0) ON CONFLICT(ip, window_start) DO NOTHING'
+    )
+    .bind(ip, windowStart)
+    .run();
+
+  const result = await db
+    .prepare(
+      'UPDATE register_attempts SET count = count + 1 WHERE ip = ? AND window_start = ? AND count < ?'
+    )
+    .bind(ip, windowStart, REGISTER_ATTEMPTS_PER_HOUR)
+    .run();
+
   return (result.meta.changes ?? 0) > 0;
 }
 
@@ -227,6 +263,20 @@ app.get('/register', c => {
 });
 
 app.post('/register', async c => {
+  // Throttle registration attempts per source IP before touching the DB for
+  // anything else — closes the "50 sequential registrations in ~1 second"
+  // bulk-farming vector. Cloudflare's edge overwrites CF-Connecting-IP with
+  // the real client IP (it can't be spoofed by the client in production);
+  // X-Forwarded-For is only a local-dev fallback.
+  const ip = c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? 'unknown';
+  const withinRegisterLimit = await tryConsumeRegisterAttempt(c.env.DB, ip);
+  if (!withinRegisterLimit) {
+    return htmlResponse(
+      registerPage('Too many registration attempts from your network. Please try again in an hour.'),
+      429
+    );
+  }
+
   let email: string, keyname: string, requestedTier: string;
   try {
     const form = await c.req.formData();
@@ -278,14 +328,32 @@ app.post('/register', async c => {
   const keyId = crypto.randomUUID();
   const resetAt = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
 
-  await c.env.DB
+  // Idempotent per email: api_keys.user_id has a UNIQUE index (migration
+  // 0004), so this INSERT is a no-op if this user already has a key —
+  // whether from an earlier registration or a concurrent request that won
+  // the race — instead of always minting a second, independent key. This
+  // mirrors the atomic `ON CONFLICT DO NOTHING` shape already used for the
+  // users upsert above. See docs/qa/cycle6-register-adversarial.md.
+  const insertResult = await c.env.DB
     .prepare(
       `INSERT INTO api_keys
          (id, user_id, name, key_prefix, key_hash, tier, monthly_limit, usage_reset_at)
-       VALUES (?, ?, ?, ?, ?, 'free', ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 'free', ?, ?)
+       ON CONFLICT(user_id) DO NOTHING`
     )
     .bind(keyId, user.id, keyname, keyPrefix, keyHash, TIER_LIMITS.free, resetAt)
     .run();
+
+  if ((insertResult.meta.changes ?? 0) === 0) {
+    // This email already has a key. We only ever store its hash, never the
+    // raw value, so it can't be redisplayed here — tell the user plainly
+    // instead of minting an independent second key.
+    const existing = await c.env.DB
+      .prepare('SELECT tier FROM api_keys WHERE user_id = ?')
+      .bind(user.id)
+      .first<{ tier: string }>();
+    return htmlResponse(alreadyRegisteredPage(email, existing?.tier ?? 'free'));
+  }
 
   return htmlResponse(keyCreatedPage(rawKey, email, 'free'));
 });
