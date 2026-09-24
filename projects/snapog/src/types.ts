@@ -21,6 +21,15 @@ export interface ApiKey {
   created_at: string;
 }
 
+// One row of the /admin/tier-requests view: tier_requests joined to users
+// on user_id = users.id, for display only (see docs/fullstack/cycle8-tier-requests-admin-view.md).
+export interface TierRequestRow {
+  id: string;
+  tier: string;
+  email: string;
+  created_at: string;
+}
+
 export interface OGParams {
   title: string;
   description?: string;

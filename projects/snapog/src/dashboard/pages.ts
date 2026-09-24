@@ -1,7 +1,7 @@
 // SnapOG — Dashboard & landing page HTML
 // Aesthetic: "Carbon Terminal" — dark developer tool, amber accent, monospace-first
 
-import type { ApiKey } from '../types';
+import type { ApiKey, TierRequestRow } from '../types';
 
 // Escape user-controlled strings (email, etc.) before interpolating into HTML.
 function escapeHtml(input: string): string {
@@ -863,6 +863,63 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
   ${footer()}`;
 
   return layout('Dashboard', body);
+}
+
+// Internal admin view — GET /admin/tier-requests, gated by AUTH_SECRET in
+// src/index.ts. Lists Pro/Business interest captured at registration
+// (tier_requests joined to users for email) so it's not silently invisible.
+// Newest first, no pagination/filtering/status column — see
+// docs/operations/cycle8-tier-requests-actionability.md for scope.
+export function tierRequestsAdminPage(rows: TierRequestRow[]): string {
+  const total = rows.length;
+  const proCount = rows.filter(r => r.tier === 'pro').length;
+  const businessCount = rows.filter(r => r.tier === 'business').length;
+
+  const summaryLine =
+    total === 0
+      ? 'No tier requests yet'
+      : `${total} request${total === 1 ? '' : 's'} · ${proCount} pro / ${businessCount} business`;
+
+  const content =
+    total === 0
+      ? `<p style="font-size:14px;color:var(--text-2);">No tier requests yet — this list fills up as people hit "Notify Me" for Pro/Business on /register.</p>`
+      : `
+      <table class="params-table">
+        <thead>
+          <tr><th>Created</th><th>Tier</th><th>Email</th><th>ID</th></tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              r => `
+          <tr>
+            <td style="font-family:var(--font-mono);color:var(--text-2);white-space:nowrap;">${escapeHtml(r.created_at)}</td>
+            <td><span class="tier-badge tier-${r.tier === 'business' ? 'business' : 'pro'}">${escapeHtml(r.tier)}</span></td>
+            <td>${escapeHtml(r.email)}</td>
+            <td style="font-family:var(--font-mono);color:var(--text-3);font-size:12px;">${escapeHtml(r.id)}</td>
+          </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>`;
+
+  const body = `
+  ${nav()}
+  <div class="container">
+    <div class="dash-layout">
+      <div class="dash-header">
+        <h1>Tier Requests</h1>
+        <p>${summaryLine}</p>
+      </div>
+      <div class="card">
+        <p class="card-title">Pro / Business Interest</p>
+        ${content}
+      </div>
+    </div>
+  </div>
+  ${footer()}`;
+
+  return layout('Tier Requests', body);
 }
 
 export function errorPage(code: number, message: string): string {

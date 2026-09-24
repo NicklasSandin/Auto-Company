@@ -14,7 +14,8 @@ bucket_name = "snapog-og-cache"
 
 [vars]
 ENVIRONMENT = "development"
-# Set AUTH_SECRET via `wrangler secret put AUTH_SECRET` for dashboard cookie signing
+# Set AUTH_SECRET via `wrangler secret put AUTH_SECRET` — shared admin token
+# for GET /admin/tier-requests (?token=...). Unset or empty = that route 404s.
 
 [env.staging]
 name = "snapog-staging"

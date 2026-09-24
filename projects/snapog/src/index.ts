@@ -10,9 +10,10 @@ import {
   interestCapturedPage,
   alreadyRegisteredPage,
   dashboardPage,
+  tierRequestsAdminPage,
   errorPage,
 } from './dashboard/pages';
-import type { ApiKey, Env, OGParams } from './types';
+import type { ApiKey, Env, OGParams, TierRequestRow } from './types';
 import { TIER_LIMITS } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -40,6 +41,23 @@ function htmlResponse(html: string, status = 200): Response {
     status,
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });
+}
+
+// Constant-time string comparison for the admin token check below — a plain
+// `===` short-circuits on the first mismatched byte, which leaks how many
+// leading characters of the secret a guess got right via response timing.
+// Length is checked first (this itself isn't secret — it doesn't reveal
+// character content), then every byte pair is XORed and OR-accumulated so
+// the loop always runs the full length regardless of where the mismatch is.
+function timingSafeEqual(a: string, b: string): boolean {
+  const aBytes = new TextEncoder().encode(a);
+  const bBytes = new TextEncoder().encode(b);
+  if (aBytes.length !== bBytes.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) {
+    diff |= aBytes[i] ^ bBytes[i];
+  }
+  return diff === 0;
 }
 
 // Validate an API key from request and return the DB row, or null
@@ -386,6 +404,45 @@ app.get('/dashboard', async c => {
 
 // ── Health / ops ──────────────────────────────────────────────────────────────
 app.get('/health', c => c.json({ ok: true, ts: new Date().toISOString() }));
+
+// Internal admin view — the warmest leads SnapOG has (people who explicitly
+// asked for Pro/Business) land in tier_requests via POST /register but
+// nothing ever read them back out. This is that read path.
+//
+// Auth: repurposes the previously-unused AUTH_SECRET binding (see
+// src/types.ts, wrangler.toml) as a shared admin token instead of building a
+// login system for a solo-operator app. Checked via ?token= against
+// c.env.AUTH_SECRET with a constant-time comparison (see timingSafeEqual
+// above). Missing/empty AUTH_SECRET fails CLOSED (this route 404s rather
+// than ever falling open), and a wrong/missing token gets the same 404 as a
+// misconfigured secret or a nonexistent route — this endpoint doesn't
+// distinguish "not authorized" from "doesn't exist" in its response.
+// See docs/fullstack/cycle8-tier-requests-admin-view.md.
+app.get('/admin/tier-requests', async c => {
+  const secret = c.env.AUTH_SECRET;
+  if (!secret) {
+    return htmlResponse(errorPage(404, 'Page not found'), 404);
+  }
+
+  const token = c.req.query('token') ?? '';
+  if (!token || !timingSafeEqual(token, secret)) {
+    return htmlResponse(errorPage(404, 'Page not found'), 404);
+  }
+
+  const rows = await c.env.DB
+    .prepare(
+      `SELECT tier_requests.id AS id,
+              tier_requests.tier AS tier,
+              tier_requests.created_at AS created_at,
+              users.email AS email
+         FROM tier_requests
+         JOIN users ON users.id = tier_requests.user_id
+        ORDER BY tier_requests.created_at DESC`
+    )
+    .all<TierRequestRow>();
+
+  return htmlResponse(tierRequestsAdminPage(rows.results ?? []));
+});
 
 // 404 fallback
 app.notFound(_c => htmlResponse(errorPage(404, 'Page not found'), 404));

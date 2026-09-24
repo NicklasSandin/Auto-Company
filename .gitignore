@@ -106,6 +106,10 @@ dmypy.json
 .env.production.local
 !.env.example
 
+# Wrangler local dev secrets (e.g. AUTH_SECRET) — never commit
+.dev.vars
+.dev.vars.*
+
 # ====================
 # Secrets & Credentials
 # ====================
@@ -184,7 +188,6 @@ docs/*/*
 !docs/*/.gitkeep
 !docs/windows-setup.md
 !docs/linux-setup.md
-!docs/local-model-setup.md
 # Ignore all memories (keep folder marker only)
 memories/*
 !memories/.gitkeep
