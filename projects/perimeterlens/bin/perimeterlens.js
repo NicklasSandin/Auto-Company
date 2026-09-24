@@ -21,6 +21,7 @@ import { checkEmailSpoofability } from "../src/checks/email.js";
 import { checkTlsHealth } from "../src/checks/tls.js";
 import { computeScore } from "../src/score.js";
 import { renderReport, renderJson } from "../src/report.js";
+import { parseArgs, normalizeDomain } from "../src/args.js";
 
 const HELP = `perimeterlens <domain> [options]
 
@@ -44,27 +45,14 @@ Options:
   -v, --version   Show version
 `;
 
-const DOMAIN_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
-
-function parseArgs(argv) {
-  const args = { domain: null, json: false, out: null, help: false, version: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--json") args.json = true;
-    else if (a === "--out") args.out = argv[++i];
-    else if (a === "-h" || a === "--help") args.help = true;
-    else if (a === "-v" || a === "--version") args.version = true;
-    else if (!args.domain && !a.startsWith("-")) args.domain = a;
-    else {
-      console.error(`Unknown argument: ${a}`);
-      process.exit(1);
-    }
-  }
-  return args;
-}
-
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
 
   if (args.help) {
     console.log(HELP);
@@ -83,9 +71,9 @@ async function main() {
     process.exit(1);
   }
 
-  const domain = args.domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const domain = normalizeDomain(args.domain);
 
-  if (!DOMAIN_RE.test(domain)) {
+  if (!domain) {
     console.error(`"${args.domain}" doesn't look like a valid domain (expected e.g. "example.com").`);
     process.exit(1);
   }
