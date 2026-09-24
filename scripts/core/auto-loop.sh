@@ -161,53 +161,59 @@ cleanup() {
 }
 
 snapshot_gitignore() {
-    if [ "$AUTO_LOOP_PROTECT_GITIGNORE" = "0" ]; then
-        echo ""
-        return
-    fi
-
-    local gitignore_file="$PROJECT_DIR/.gitignore"
-    local snapshot_file=""
-    if [ -f "$gitignore_file" ]; then
-        snapshot_file=$(mktemp)
-        cp "$gitignore_file" "$snapshot_file"
-    fi
-    echo "$snapshot_file"
+    # Intentionally unused: kept as a no-op stub so any external caller of the
+    # old snapshot/restore pair doesn't break. The live pre-cycle file is NOT
+    # a trustworthy baseline — if it was already corrupted before the cycle
+    # started, snapshotting it just re-enshrines the corruption. See
+    # restore_gitignore_if_changed, which anchors on git HEAD instead.
+    echo ""
 }
 
 restore_gitignore_if_changed() {
-    local snapshot_file="$1"
+    # Unused positional arg kept for call-site compatibility with the old
+    # snapshot-based signature.
+    local _unused_snapshot_file="$1"
     if [ "$AUTO_LOOP_PROTECT_GITIGNORE" = "0" ]; then
-        [ -n "$snapshot_file" ] && rm -f "$snapshot_file"
         return
     fi
 
     local gitignore_file="$PROJECT_DIR/.gitignore"
-    local changed=0
 
+    # Anchor on the last-committed .gitignore (git HEAD), not a pre-cycle
+    # live-file snapshot. A pre-cycle snapshot cannot distinguish "this cycle
+    # broke .gitignore" from "this cycle fixed .gitignore that was already
+    # broken" — it always reverts to whatever was on disk before the cycle
+    # ran, which silently undoes legitimate fixes (see cycle 9/10 postmortem:
+    # the .dev.vars protection lines were repeatedly stripped, fixed by an
+    # agent, then reverted right back by this guard every cycle). git HEAD is
+    # the actual source of truth: any real improvement to .gitignore must be
+    # committed to persist, and any uncommitted drift (accidental or
+    # malicious) gets reset to the last reviewed, committed version.
+    if ! git -C "$PROJECT_DIR" rev-parse --verify -q HEAD:.gitignore >/dev/null; then
+        # No committed .gitignore to anchor on (e.g. very first commit not
+        # yet made) — nothing safe to restore to, so leave the file alone.
+        return
+    fi
+
+    local head_content committed_tmp
+    committed_tmp=$(mktemp)
+    git -C "$PROJECT_DIR" show HEAD:.gitignore > "$committed_tmp" 2>/dev/null
+
+    local changed=0
     if [ -f "$gitignore_file" ]; then
-        if [ -z "$snapshot_file" ] || [ ! -f "$snapshot_file" ]; then
-            changed=1
-        elif ! cmp -s "$gitignore_file" "$snapshot_file"; then
+        if ! cmp -s "$gitignore_file" "$committed_tmp"; then
             changed=1
         fi
     else
-        if [ -n "$snapshot_file" ] && [ -f "$snapshot_file" ]; then
-            changed=1
-        fi
+        changed=1
     fi
 
     if [ "$changed" -eq 1 ]; then
-        if [ -n "$snapshot_file" ] && [ -f "$snapshot_file" ]; then
-            cp "$snapshot_file" "$gitignore_file"
-            log_cycle "$loop_count" "GUARD" "Blocked cycle mutation of .gitignore and restored baseline"
-        else
-            rm -f "$gitignore_file"
-            log_cycle "$loop_count" "GUARD" "Blocked cycle-created .gitignore and removed it"
-        fi
+        cp "$committed_tmp" "$gitignore_file"
+        log_cycle "$loop_count" "GUARD" "Reset .gitignore to last-committed (git HEAD) baseline"
     fi
 
-    [ -n "$snapshot_file" ] && rm -f "$snapshot_file"
+    rm -f "$committed_tmp"
 }
 
 get_file_size_bytes() {
