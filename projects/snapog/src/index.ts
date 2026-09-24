@@ -112,6 +112,17 @@ async function tryConsumeQuota(db: D1Database, key: ApiKey): Promise<boolean> {
   return (result.meta.changes ?? 0) > 0;
 }
 
+// If the R2 cache lookup, the Satori render, or anything else downstream of
+// tryConsumeQuota throws, the caller has already paid one unit of quota for
+// nothing — refund it so a transient R2/D1 hiccup or a render edge case
+// doesn't permanently cost a (possibly paid) customer an image credit.
+async function refundQuota(db: D1Database, key: ApiKey): Promise<void> {
+  await db
+    .prepare('UPDATE api_keys SET usage_count = usage_count - 1 WHERE id = ? AND usage_count > 0')
+    .bind(key.id)
+    .run();
+}
+
 // Per-IP throttle on POST /register itself — separate from the per-key /og
 // quota above. Fixed one-hour buckets keyed by (ip, window_start); ensure
 // the bucket row exists, then atomically check-and-increment it with the
@@ -172,6 +183,60 @@ app.get('/', c => {
   return htmlResponse(landingPage(host));
 });
 
+// Fixed marketing copy for the homepage's "live preview" image — kept out of
+// OGParams-from-query-string entirely (see /demo-preview.png below).
+const DEMO_PREVIEW_PARAMS: OGParams = {
+  title: 'How to Build a Billion-Dollar API',
+  description:
+    'A deep dive into developer tools that compound — and the pricing that makes them survive',
+  domain: 'myblog.dev',
+  theme: 'dark',
+  template: 'default',
+};
+const DEMO_PREVIEW_R2_KEY = 'og/landing-demo-preview.png';
+
+// Static homepage preview image. Deliberately NOT the general /og route: it
+// used to be a live /og?...&key=<public demo key> call, which meant (a) a
+// long-lived credential sat in plaintext in page source, discoverable via
+// view-source and usable directly against /og with arbitrary parameters —
+// a fully public, unauthenticated render+store endpoint — and (b) every
+// homepage view consumed one unit of that shared key's quota even on a
+// cache hit, so organic traffic alone could exhaust it and break the
+// homepage's own conversion-critical image. This route accepts no
+// parameters, needs no API key, and never touches api_keys/quota — it only
+// ever renders the one fixed marketing image, cached in R2 indefinitely.
+// See docs/qa/cycle11-full-codebase-review.md Finding 1.
+app.get('/demo-preview.png', async c => {
+  const cached = await c.env.OG_CACHE.get(DEMO_PREVIEW_R2_KEY);
+  if (cached) {
+    const imageData = await cached.arrayBuffer();
+    return new Response(imageData, {
+      headers: {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+        'X-Cache': 'HIT',
+      },
+    });
+  }
+
+  const imageResponse = await generateOGImage(DEMO_PREVIEW_PARAMS, false);
+  const imageBuffer = await imageResponse.arrayBuffer();
+
+  c.executionCtx.waitUntil(
+    c.env.OG_CACHE.put(DEMO_PREVIEW_R2_KEY, imageBuffer.slice(0), {
+      httpMetadata: { contentType: 'image/png' },
+    }).catch(err => console.error('R2 demo-preview put failed:', err))
+  );
+
+  return new Response(imageBuffer, {
+    headers: {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+      'X-Cache': 'MISS',
+    },
+  });
+});
+
 // ── OG image generation ────────────────────────────────────────────────────────
 app.get('/og', async c => {
   const q = c.req.query();
@@ -227,51 +292,66 @@ app.get('/og', async c => {
   const cacheKey = await buildCacheKey(params, watermark);
   const r2Key = `og/${cacheKey}.png`;
 
-  // ── R2 cache lookup ──
-  const cached = await c.env.OG_CACHE.get(r2Key);
-  if (cached) {
-    // Cache hit — quota was already consumed atomically above; just log the
-    // event for the dashboard (best-effort, doesn't block the response).
+  // Everything below spends the quota unit consumed above. If any of it
+  // throws (R2 down, Satori render error on adversarial input, etc.), refund
+  // the unit before propagating to app.onError — otherwise a transient
+  // backend failure permanently costs the customer an image credit with
+  // nothing delivered in return.
+  try {
+    // ── R2 cache lookup ──
+    const cached = await c.env.OG_CACHE.get(r2Key);
+    if (cached) {
+      // Cache hit — quota was already consumed atomically above; just log
+      // the event for the dashboard (best-effort, doesn't block the
+      // response).
+      c.executionCtx.waitUntil(
+        recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', true).catch(err =>
+          console.error('recordUsageEvent failed:', err)
+        )
+      );
+      const imageData = await cached.arrayBuffer();
+      return new Response(imageData, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+          'X-Cache': 'HIT',
+          'X-SnapOG-Tier': apiKey.tier,
+        },
+      });
+    }
+
+    // ── Generate image ──
+    const imageResponse = await generateOGImage(params, watermark);
+    const imageBuffer = await imageResponse.arrayBuffer();
+
+    // Store in R2 (fire-and-forget, don't block response)
     c.executionCtx.waitUntil(
-      recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', true)
+      c.env.OG_CACHE.put(r2Key, imageBuffer.slice(0), {
+        httpMetadata: { contentType: 'image/png' },
+        customMetadata: { tier: apiKey.tier, template: params.template ?? 'default' },
+      }).catch(err => console.error('R2 cache put failed:', err))
     );
-    const imageData = await cached.arrayBuffer();
-    return new Response(imageData, {
+
+    // Log the event for the dashboard (best-effort; quota was already
+    // consumed atomically above, before the render even started)
+    c.executionCtx.waitUntil(
+      recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', false).catch(err =>
+        console.error('recordUsageEvent failed:', err)
+      )
+    );
+
+    return new Response(imageBuffer, {
       headers: {
         'Content-Type': 'image/png',
         'Cache-Control': 'public, max-age=86400, s-maxage=604800',
-        'X-Cache': 'HIT',
+        'X-Cache': 'MISS',
         'X-SnapOG-Tier': apiKey.tier,
       },
     });
+  } catch (err) {
+    await refundQuota(c.env.DB, apiKey);
+    throw err;
   }
-
-  // ── Generate image ──
-  const imageResponse = await generateOGImage(params, watermark);
-  const imageBuffer = await imageResponse.arrayBuffer();
-
-  // Store in R2 (fire-and-forget, don't block response)
-  c.executionCtx.waitUntil(
-    c.env.OG_CACHE.put(r2Key, imageBuffer.slice(0), {
-      httpMetadata: { contentType: 'image/png' },
-      customMetadata: { tier: apiKey.tier, template: params.template ?? 'default' },
-    })
-  );
-
-  // Log the event for the dashboard (best-effort; quota was already
-  // consumed atomically above, before the render even started)
-  c.executionCtx.waitUntil(
-    recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', false)
-  );
-
-  return new Response(imageBuffer, {
-    headers: {
-      'Content-Type': 'image/png',
-      'Cache-Control': 'public, max-age=86400, s-maxage=604800',
-      'X-Cache': 'MISS',
-      'X-SnapOG-Tier': apiKey.tier,
-    },
-  });
 });
 
 // ── Registration ──────────────────────────────────────────────────────────────

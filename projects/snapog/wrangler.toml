@@ -17,12 +17,10 @@ ENVIRONMENT = "development"
 # Set AUTH_SECRET via `wrangler secret put AUTH_SECRET` — shared admin token
 # for GET /admin/tier-requests (?token=...). Unset or empty = that route 404s.
 
-[env.staging]
-name = "snapog-staging"
-[env.staging.vars]
-ENVIRONMENT = "staging"
-
-[env.production]
-name = "snapog"
-[env.production.vars]
-ENVIRONMENT = "production"
+# No [env.staging] / [env.production] sections: Wrangler v3 named
+# environments do NOT inherit top-level [[d1_databases]]/[[r2_buckets]]
+# bindings, so a previous version of this file that declared them without
+# repeating those bindings would deploy a Worker where c.env.DB/OG_CACHE are
+# undefined — every route but / and /health would 500. The documented deploy
+# path (README, package.json's `deploy` script) is plain `wrangler deploy`,
+# which uses the top-level config above and is the only supported path.
