@@ -1,0 +1,33 @@
+{
+  "name": "perimeterlens",
+  "version": "0.1.0",
+  "description": "Free, open-source, zero-dependency CLI that gives you a single passive exposure read on your own domain: forgotten subdomains (certificate-transparency), email spoofability (SPF/DMARC/DKIM/BIMI/MTA-STS/DNSSEC), and TLS certificate health. Self-scan only. Not a header grader (use Mozilla HTTP Observatory or SecurityHeaders.com for that).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "perimeterlens": "./bin/perimeterlens.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "scan": "node ./bin/perimeterlens.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "keywords": [
+    "security",
+    "attack-surface",
+    "exposure",
+    "dns",
+    "tls",
+    "spf",
+    "dmarc",
+    "cli",
+    "passive-recon"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NicklasSandin/perimeterlens.git"
+  }
+}

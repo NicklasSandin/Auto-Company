@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: No install step needed — zero runtime dependencies
+        run: test ! -d node_modules
+      - run: node --test test/*.test.js
+      - name: Smoke test the CLI against a real domain
+        run: node bin/perimeterlens.js example.com
