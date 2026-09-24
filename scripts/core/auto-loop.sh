@@ -22,6 +22,8 @@
 #   CODEX_BIN=...               # Optional Codex executable override
 #   CODEX_SANDBOX_MODE=danger-full-access
 #                               # Codex sandbox mode (only for ENGINE=codex)
+#   CODEX_OSS=0                 # 1 = run Codex against a local model (--oss)
+#   CODEX_LOCAL_PROVIDER=       # lmstudio|ollama (only when CODEX_OSS=1)
 #   LOOP_INTERVAL=30            # Seconds between cycles (default: 30)
 #   CYCLE_TIMEOUT_SECONDS=1800  # Max seconds per cycle before force-kill
 #   MAX_CONSECUTIVE_ERRORS=5    # Circuit breaker threshold
@@ -43,6 +45,34 @@ CONSENSUS_FILE="$PROJECT_DIR/memories/consensus.md"
 PROMPT_FILE="$PROJECT_DIR/PROMPT.md"
 PID_FILE="$PROJECT_DIR/.auto-loop.pid"
 STATE_FILE="$PROJECT_DIR/.auto-loop-state"
+ENV_FILE="$PROJECT_DIR/.auto-loop.env"
+
+# === Load .auto-loop.env ===
+# The systemd unit already reads this file via EnvironmentFile=-, but a
+# foreground "make start" did not, so a setting written there was silently
+# ignored in one of the two entry points. Parse it here so the file means the
+# same thing everywhere. Only KEY=VALUE lines are honoured (never sourced, so
+# a stray command in the file cannot execute), and real environment variables
+# still win, keeping "ENGINE=codex make start" working.
+if [ -f "$ENV_FILE" ]; then
+    while IFS= read -r env_line || [ -n "$env_line" ]; do
+        case "$env_line" in
+            ''|'#'*) continue ;;
+        esac
+        if [[ "$env_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            env_key="${BASH_REMATCH[1]}"
+            env_val="${BASH_REMATCH[2]}"
+            # Strip one layer of matching quotes, as EnvironmentFile allows.
+            case "$env_val" in
+                \"*\") env_val="${env_val:1:${#env_val}-2}" ;;
+                \'*\') env_val="${env_val:1:${#env_val}-2}" ;;
+            esac
+            if [ -z "${!env_key:-}" ]; then
+                export "$env_key=$env_val"
+            fi
+        fi
+    done < "$ENV_FILE"
+fi
 
 # Loop settings (all overridable via env vars)
 ENGINE="${ENGINE:-claude}"
@@ -53,6 +83,8 @@ CLAUDE_BIN="${CLAUDE_BIN:-}"
 CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-bypassPermissions}"
 CODEX_BIN="${CODEX_BIN:-}"
 CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-danger-full-access}"
+CODEX_OSS="${CODEX_OSS:-0}"
+CODEX_LOCAL_PROVIDER="${CODEX_LOCAL_PROVIDER:-}"
 LOOP_INTERVAL="${LOOP_INTERVAL:-30}"
 CYCLE_TIMEOUT_SECONDS="${CYCLE_TIMEOUT_SECONDS:-1800}"
 MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-5}"
@@ -395,6 +427,12 @@ run_codex_cycle() {
     (
         cd "$PROJECT_DIR" || exit 1
         local codex_cmd=("$RESOLVED_ENGINE_BIN" "exec" "-c" "sandbox_mode=\"${CODEX_SANDBOX_MODE}\"" "-o" "$message_file")
+        if [ "$CODEX_OSS" = "1" ]; then
+            codex_cmd+=("--oss")
+            if [ -n "$CODEX_LOCAL_PROVIDER" ]; then
+                codex_cmd+=("--local-provider" "$CODEX_LOCAL_PROVIDER")
+            fi
+        fi
         if [ -n "$MODEL" ]; then
             codex_cmd+=("-m" "$MODEL")
         fi
@@ -601,7 +639,11 @@ error_count=0
 log "=== Auto Company Loop Started (PID $$) ==="
 log "Project: $PROJECT_DIR"
 if [ "$ENGINE" = "codex" ]; then
-    log "Engine: codex | Model: $MODEL_LABEL | Sandbox: $CODEX_SANDBOX_MODE"
+    if [ "$CODEX_OSS" = "1" ]; then
+        log "Engine: codex (local/--oss${CODEX_LOCAL_PROVIDER:+ via $CODEX_LOCAL_PROVIDER}) | Model: $MODEL_LABEL | Sandbox: $CODEX_SANDBOX_MODE"
+    else
+        log "Engine: codex | Model: $MODEL_LABEL | Sandbox: $CODEX_SANDBOX_MODE"
+    fi
 else
     log "Engine: claude | Model: $MODEL_LABEL | PermissionMode: $CLAUDE_PERMISSION_MODE"
 fi

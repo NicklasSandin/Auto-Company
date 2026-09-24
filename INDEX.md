@@ -11,6 +11,7 @@ This file is a quick map of the repository layout, what each script is responsib
 - `scripts/windows/`: Windows control, keepalive, and autostart scripts
 - `scripts/core/`: main loop and core control scripts
 - `scripts/wsl/`: WSL / Linux `systemd --user` daemon scripts
+- `scripts/local/`: local-model (LM Studio) session helpers
 - `scripts/linux/`: native Linux dashboard status and start/stop scripts
 - `scripts/macos/`: macOS `launchd` daemon scripts
 
@@ -81,6 +82,7 @@ Notes:
 | Core | `scripts/core/monitor.sh` | Core status / log output |
 | Core | `scripts/core/stop-loop.sh` | Core stop / pause / resume control |
 | Core | `scripts/core/reset-consensus.sh` | Reset the company to Day 0 (archives consensus, clears the rollback snapshot) |
+| Local | `scripts/local/select-model.sh` | Pick a local LM Studio model for the session and record it in `.auto-loop.env` |
 
 ## Fast Troubleshooting Path
 
