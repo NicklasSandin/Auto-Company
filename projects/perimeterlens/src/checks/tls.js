@@ -16,6 +16,44 @@ const TLS_TIMEOUT_MS = 10_000;
 const WARN_DAYS = 30;
 
 /**
+ * Pure post-handshake evaluation: turns a peer certificate + connection
+ * metadata into the result shape checkTlsHealth resolves with. Extracted
+ * from checkTlsHealth so this logic (expiry math, trust/protocol flags) is
+ * unit-testable without a real TLS socket.
+ *
+ * @param {import('node:tls').PeerCertificate | null | undefined} cert
+ * @param {string} protocol
+ * @param {boolean} authorized
+ * @param {string | undefined} authorizationError
+ * @returns {{ok: true, ...} | {ok: false, error: string}}
+ */
+export function computeTlsResult(cert, protocol, authorized, authorizationError) {
+  if (!cert || Object.keys(cert).length === 0) {
+    return { ok: false, error: "no certificate returned by peer" };
+  }
+
+  const now = Date.now();
+  const validTo = new Date(cert.valid_to);
+  const validFrom = new Date(cert.valid_from);
+  const daysRemaining = Math.floor((validTo.getTime() - now) / (1000 * 60 * 60 * 24));
+
+  return {
+    ok: true,
+    subject: cert.subject?.CN ?? null,
+    issuer: cert.issuer?.CN ?? null,
+    validFrom: validFrom.toISOString(),
+    validTo: validTo.toISOString(),
+    daysRemaining,
+    expiringSoon: daysRemaining <= WARN_DAYS,
+    expired: daysRemaining < 0,
+    trusted: authorized === true,
+    trustError: authorized ? null : (authorizationError || "unknown"),
+    protocol,
+    outdatedProtocol: ["TLSv1", "TLSv1.1", "SSLv3"].includes(protocol),
+  };
+}
+
+/**
  * @param {string} domain
  * @returns {Promise<{ok: true, ...} | {ok: false, error: string}>}
  */
@@ -43,30 +81,7 @@ export function checkTlsHealth(domain) {
       },
       () => {
         const cert = socket.getPeerCertificate(false);
-        if (!cert || Object.keys(cert).length === 0) {
-          finish({ ok: false, error: "no certificate returned by peer" });
-          return;
-        }
-
-        const now = Date.now();
-        const validTo = new Date(cert.valid_to);
-        const validFrom = new Date(cert.valid_from);
-        const daysRemaining = Math.floor((validTo.getTime() - now) / (1000 * 60 * 60 * 24));
-
-        finish({
-          ok: true,
-          subject: cert.subject?.CN ?? null,
-          issuer: cert.issuer?.CN ?? null,
-          validFrom: validFrom.toISOString(),
-          validTo: validTo.toISOString(),
-          daysRemaining,
-          expiringSoon: daysRemaining <= WARN_DAYS,
-          expired: daysRemaining < 0,
-          trusted: socket.authorized === true,
-          trustError: socket.authorized ? null : (socket.authorizationError || "unknown"),
-          protocol: socket.getProtocol(),
-          outdatedProtocol: ["TLSv1", "TLSv1.1", "SSLv3"].includes(socket.getProtocol()),
-        });
+        finish(computeTlsResult(cert, socket.getProtocol(), socket.authorized, socket.authorizationError));
       }
     );
 
